@@ -1,60 +1,51 @@
-# Illume iOS
+# Illume (Expo)
 
-Native SwiftUI iOS app for the existing Illume reader backend.
-
-## Stack
-
-- SwiftUI for iOS 17+
-- Swift Package Manager + xtool
-- Supabase Swift for Auth, Postgres, Storage, and Edge Functions
-- StoreKit 2 for the `illume.pro.monthly` Pro subscription
-
-## Backend
-
-The app connects to the same Supabase project as `/home/russ/Documents/Projects/reader`:
+React Native + Expo port of the native SwiftUI iOS app. Same Supabase backend:
 
 ```text
 https://mduemjbplprditrqolcp.supabase.co
 ```
 
-Dashboard/admin functionality is intentionally out of scope.
+## Stack
 
-## Google Sign-In
+- Expo SDK 57 + React Native 0.86 + TypeScript
+- Supabase JS for Auth, Postgres, Storage, Edge Functions
+- `expo-secure-store` for session (was Keychain)
+- `expo-document-picker` + `expo-file-system` + `jszip` for EPUB import (was ZIPFoundation)
+- `expo-speech` for narration (was AVSpeechSynthesizer)
+- `expo-iap` (OpenIAP) for `illume.pro.monthly` (was StoreKit 2) — requires a dev build, not Expo Go
+- Apple + Google sign-in via `expo-apple-authentication` + hosted OAuth (`expo-web-browser`)
 
-Google sign-in uses Supabase hosted OAuth with an iOS callback scheme. Enable Google as an Auth provider in Supabase, then make sure the app bundle `Info.plist` contains:
-
-```xml
-<key>CFBundleURLTypes</key>
-<array>
-  <dict>
-    <key>CFBundleURLSchemes</key>
-    <array>
-      <string>com.illumereader.ios</string>
-    </array>
-  </dict>
-</array>
-```
-
-The same callback URL, `com.illumereader.ios://auth-callback`, must be allowed in Supabase Auth redirect URLs.
-
-## Local Checks
+## Run
 
 ```bash
-swift test --filter IllumeCoreTests
-xtool dev run
+npm install
+npx expo start
 ```
 
-`swift test` validates the pure Swift core on Linux. SwiftUI, StoreKit, AuthenticationServices, and device signing require the iOS SDK/device flow through `xtool` or Xcode.
-
-## StoreKit Backend Secrets
-
-Deploy the new Supabase functions with these secrets configured:
+Tap-through on your iPhone:
 
 ```bash
-supabase secrets set \
-  APPLE_BUNDLE_ID=com.illumereader.ios \
-  APPLE_APP_APPLE_ID=<numeric-app-id> \
-  APPLE_ROOT_CERTIFICATES_BASE64=<comma-separated-base64-der-certs>
+npx expo run:ios --device
 ```
 
-For sandbox-only local testing, `APPLE_DISABLE_SIGNATURE_VERIFICATION=true` bypasses JWS certificate verification. Do not use that bypass in production.
+IAP / StoreKit needs a dev client + physical device:
+
+```bash
+npx expo prebuild --clean
+npx expo run:ios --device
+```
+
+## Checks
+
+```bash
+npm run typecheck
+npm test
+```
+
+## Notes
+
+- Google OAuth uses `com.illumereader.ios://auth-callback` — must stay in Supabase Auth redirect URLs.
+- Bundle ID stays `com.illumereader.ios` (`app.json`).
+- PDF text comes from server `book_pages` + `process-reader-document`, same as Swift. Local PDF parsing is intentionally out of scope.
+- Swift sources were replaced by this Expo app (see git history before the rewrite commit).

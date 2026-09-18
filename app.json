@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "Illume",
+    "slug": "illume",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "com.illumereader.ios",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "bundleIdentifier": "com.illumereader.ios",
+      "deploymentTarget": "16.4",
+      "supportsTablet": true,
+      "infoPlist": {
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLSchemes": ["com.illumereader.ios"]
+          }
+        ],
+        "NSFaceIDUsageDescription": "Face ID is used to keep your reading session secure."
+      }
+    },
+    "android": {
+      "package": "com.illumereader.ios",
+      "adaptiveIcon": {
+        "backgroundColor": "#FBF8F1"
+      }
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-apple-authentication",
+      "expo-document-picker"
+    ],
+    "extra": {
+      "supabaseUrl": "https://mduemjbplprditrqolcp.supabase.co",
+      "eas": {
+        "projectId": "00000000-0000-0000-0000-000000000000"
+      }
+    }
+  }
+}
