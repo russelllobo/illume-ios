@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
+import * as Updates from 'expo-updates';
 import { useStore } from '../store';
 import { IllumeTheme } from '../theme';
 import { STORAGE_QUOTA_BYTES } from '../supabase';
@@ -23,6 +24,28 @@ function Meter({ label, value, max }: { label: string; value: number; max: numbe
 
 export function ProfileSheet({ onClose }: { onClose: () => void }) {
   const { isPro, session, storageUsed, imageUsageCount, imageLimit, purchasePro, restorePro, signOut } = useStore();
+  const [updateMsg, setUpdateMsg] = useState('');
+
+  async function checkForUpdates() {
+    setUpdateMsg('Checking…');
+    try {
+      if (__DEV__) {
+        setUpdateMsg('Updates are checked in release builds, not dev.');
+        return;
+      }
+      const check = await Updates.checkForUpdateAsync();
+      if (!check.isAvailable) {
+        setUpdateMsg('Up to date.');
+        return;
+      }
+      setUpdateMsg('Downloading…');
+      await Updates.fetchUpdateAsync();
+      await Updates.reloadAsync();
+    } catch (e: any) {
+      setUpdateMsg(e?.message ?? 'Update check failed.');
+    }
+  }
+
   return (
     <View style={styles.root}>
       <Text style={styles.title}>{isPro ? 'Illume Pro' : 'Free plan'}</Text>
@@ -43,6 +66,10 @@ export function ProfileSheet({ onClose }: { onClose: () => void }) {
       <Pressable style={[styles.pill, { backgroundColor: IllumeTheme.coral, marginTop: 12 }]} onPress={() => { signOut(); onClose(); }}>
         <Text style={styles.pillText}>Sign out</Text>
       </Pressable>
+      <Pressable style={{ marginTop: 16 }} onPress={checkForUpdates}>
+        <Text style={{ textAlign: 'center', fontWeight: '700' }}>Check for updates</Text>
+      </Pressable>
+      {!!updateMsg && <Text style={{ textAlign: 'center', color: '#666', marginTop: 8 }}>{updateMsg}</Text>}
       <Pressable style={{ marginTop: 16 }} onPress={onClose}>
         <Text style={{ textAlign: 'center', fontWeight: '700' }}>Close</Text>
       </Pressable>

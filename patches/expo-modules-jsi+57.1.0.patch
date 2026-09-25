@@ -1,0 +1,107 @@
+diff --git a/node_modules/expo-modules-jsi/apple/Sources/ExpoModulesJSI/Runtime/JavaScriptRuntime.swift b/node_modules/expo-modules-jsi/apple/Sources/ExpoModulesJSI/Runtime/JavaScriptRuntime.swift
+@@ -185,12 +185,12 @@
+       resultPtr: UnsafeMutablePointer<facebook.jsi.Value>
+     ) -> Bool {
+       let propertyName = String(cString: propertyName)
+-      nonisolated(unsafe) let resultPtr = resultPtr
++      let resultAddr = unsafeBitCast(resultPtr, to: UInt.self)
+ 
+       return withGuaranteedContext(context) { (context: HostObjectContext, runtime) in
+         return JavaScriptActor.assumeIsolated {
+           return forwardingSwiftErrorsToJS(runtime: runtime) {
+-            try context.get(propertyName).writeJSIValue(to: resultPtr)
++            try context.get(propertyName).writeJSIValue(to: UnsafeMutablePointer<facebook.jsi.Value>(bitPattern: resultAddr)!)
+           }
+         }
+       }
+@@ -311,7 +311,7 @@
+     let nativeConstructorKey = "__native_constructor__"
+ 
+     // Validate that the name is a valid JS identifier to prevent code injection via eval.
+-    if name.wholeMatch(of: /^[a-zA-Z_$][a-zA-Z0-9_$]*$/) == nil {
++    if name.range(of: "^[a-zA-Z_$][a-zA-Z0-9_$]*$", options: .regularExpression) == nil {
+       throw InvalidIdentifierError(identifier: name)
+     }
+ 
+@@ -774,19 +774,20 @@
+     // synchronous call, so the `nonisolated(unsafe)` capture is sound. This removes a per-call class
+     // allocation + retain/release + dealloc that profiling showed dominating the no-op `@JS` host-call
+     // floor.
+-    nonisolated(unsafe) let thisPtr = thisPtr
+-    nonisolated(unsafe) let argumentsPtr = argumentsPtr
+-    nonisolated(unsafe) let resultPtr = resultPtr
++    // Pointers cannot cross the sending closure below, so pass them as UInt and rebuild inside.
++    let thisAddr = unsafeBitCast(thisPtr, to: UInt.self)
++    let argumentsAddr = unsafeBitCast(argumentsPtr, to: UInt.self)
++    let resultAddr = unsafeBitCast(resultPtr, to: UInt.self)
+ 
+     // See `withGuaranteedContext` for why neither the context nor the runtime is retained here, and
+     // why the result is written to the caller's slot instead of being returned.
+     return withGuaranteedContext(context) { (context: HostFunctionContext, runtime) in
+       return JavaScriptActor.assumeIsolated {
+         return forwardingSwiftErrorsToJS(runtime: runtime) {
+-          let this = UnsafeMutablePointer(mutating: thisPtr).move()
+-          let arguments = JavaScriptValuesBuffer(runtime, start: argumentsPtr, count: argumentsCount)
++          let this = UnsafeMutablePointer(mutating: UnsafePointer<facebook.jsi.Value>(bitPattern: thisAddr)!).move()
++          let arguments = JavaScriptValuesBuffer(runtime, start: UnsafePointer<facebook.jsi.Value>(bitPattern: argumentsAddr)!, count: argumentsCount)
+           let thisValue = JavaScriptValue(runtime, this)
+-          try context.call(thisValue, consume arguments).writeJSIValue(to: resultPtr)
++          try context.call(thisValue, consume arguments).writeJSIValue(to: UnsafeMutablePointer<facebook.jsi.Value>(bitPattern: resultAddr)!)
+         }
+       }
+     }
+@@ -817,18 +818,19 @@
+     // handed in as a borrowed `JavaScriptUnownedValue` pointing straight at the C++-owned `this` slot:
+     // it is not moved out and no owning `JavaScriptValue` is allocated, so the closure avoids the
+     // per-call `weak`-runtime form/destroy and heap object that the owning `this` pays.
+-    nonisolated(unsafe) let thisPtr = thisPtr
+-    nonisolated(unsafe) let argumentsPtr = argumentsPtr
+-    nonisolated(unsafe) let resultPtr = resultPtr
++    // Pointers cannot cross the sending closure below, so pass them as UInt and rebuild inside.
++    let thisAddr = unsafeBitCast(thisPtr, to: UInt.self)
++    let argumentsAddr = unsafeBitCast(argumentsPtr, to: UInt.self)
++    let resultAddr = unsafeBitCast(resultPtr, to: UInt.self)
+ 
+     // See `withGuaranteedContext` for why neither the context nor the runtime is retained here, and
+     // why the result is written to the caller's slot instead of being returned.
+     return withGuaranteedContext(context) { (context: UnownedThisHostFunctionContext, runtime) in
+       return JavaScriptActor.assumeIsolated {
+         return forwardingSwiftErrorsToJS(runtime: runtime) {
+-          let arguments = JavaScriptValuesBuffer(runtime, start: argumentsPtr, count: argumentsCount)
+-          let thisValue = JavaScriptUnownedValue(runtime.pointee, thisPtr)
+-          try context.call(thisValue, consume arguments).writeJSIValue(to: resultPtr)
++          let arguments = JavaScriptValuesBuffer(runtime, start: UnsafePointer<facebook.jsi.Value>(bitPattern: argumentsAddr)!, count: argumentsCount)
++          let thisValue = JavaScriptUnownedValue(runtime.pointee, UnsafePointer<facebook.jsi.Value>(bitPattern: thisAddr)!)
++          try context.call(thisValue, consume arguments).writeJSIValue(to: UnsafeMutablePointer<facebook.jsi.Value>(bitPattern: resultAddr)!)
+         }
+       }
+     }
+diff --git a/node_modules/expo-modules-jsi/apple/Sources/ExpoModulesJSI/Runtime/Values/JavaScriptPromise.swift b/node_modules/expo-modules-jsi/apple/Sources/ExpoModulesJSI/Runtime/Values/JavaScriptPromise.swift
+@@ -36,6 +36,8 @@
+     let resolveFunction = JavaScriptValue.Ref()
+     let rejectFunction = JavaScriptValue.Ref()
+ 
++    nonisolated init() {}
++
+     func allowRelease() {
+       object.release()
+       resolveFunction.release()
+diff --git a/node_modules/expo-modules-jsi/apple/Sources/ExpoModulesJSI-Cxx/include/RuntimeScheduler.h b/node_modules/expo-modules-jsi/apple/Sources/ExpoModulesJSI-Cxx/include/RuntimeScheduler.h
+@@ -50,7 +50,7 @@
+    `scheduleTask` dispatches through `fn`, which the host implements against
+    the real react::RuntimeScheduler.
+    */
+-  SWIFT_RETURNS_RETAINED RuntimeScheduler(void *scheduler, ScheduleFn fn) noexcept
++  RuntimeScheduler(void *scheduler, ScheduleFn fn) noexcept
+       : nativeScheduler(scheduler), scheduleFn(fn) {}
+ 
+   /**
+@@ -58,7 +58,7 @@
+    caller's thread — intended for standalone runtimes (e.g. tests) that have
+    no React scheduler.
+    */
+-  SWIFT_RETURNS_RETAINED RuntimeScheduler() {}
++  RuntimeScheduler() {}
+ 
+   RuntimeScheduler(const RuntimeScheduler &) = delete;
+ 

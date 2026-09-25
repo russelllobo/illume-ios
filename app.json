@@ -6,8 +6,17 @@
     "orientation": "portrait",
     "scheme": "com.illumereader.ios",
     "userInterfaceStyle": "light",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/3bab2f5c-752b-410d-897f-d13fe6650fbb",
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
+    },
     "ios": {
-      "bundleIdentifier": "com.illumereader.ios",
+      "bundleIdentifier": "com.russellsystems.illume",
+      "appleTeamId": "SZ78KGUF6B",
       "deploymentTarget": "16.4",
       "supportsTablet": true,
       "infoPlist": {
@@ -16,11 +25,12 @@
             "CFBundleURLSchemes": ["com.illumereader.ios"]
           }
         ],
-        "NSFaceIDUsageDescription": "Face ID is used to keep your reading session secure."
+        "NSFaceIDUsageDescription": "Face ID is used to keep your reading session secure.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
-      "package": "com.illumereader.ios",
+      "package": "com.russellsystems.illume",
       "adaptiveIcon": {
         "backgroundColor": "#FBF8F1"
       }
@@ -33,8 +43,9 @@
     "extra": {
       "supabaseUrl": "https://mduemjbplprditrqolcp.supabase.co",
       "eas": {
-        "projectId": "00000000-0000-0000-0000-000000000000"
+        "projectId": "3bab2f5c-752b-410d-897f-d13fe6650fbb"
       }
-    }
+    },
+    "owner": "russelllobo"
   }
 }
