@@ -18,3 +18,5 @@ xtool/*.app/
 # Local environment files
 .env
 .env.*
+node_modules/
+/AppIcon.png
