@@ -1,0 +1,278 @@
+--- mirror.py
++++ mirror.py
+@@ -17,6 +17,7 @@
+ 
+ from lifecycle import AlreadyRunning, Runtime, close_session, connect_service
+ from usb_input import InputBridge
++from web import WebMirror
+ 
+ log = logging.getLogger('iphone-mirror')
+ 
+@@ -93,6 +94,23 @@
+             self.player.stdin.close()
+         self._thread.join(timeout=1)
+ 
++class WebPlayer:
++    """Feed the browser transcoder without opening a desktop window."""
++    def __init__(self, vps, sps, pps, *, web, on_stop, on_ready,
++                 on_frame=None, on_decode_error=None):
++        from pymobiledevice3.remote.core_device.hevc_av import remove_emulation_prevention, parse_sps
++        state = parse_sps(remove_emulation_prevention(sps[2:]))
++        self.width, self.height = state.pic_width_in_luma_samples, state.pic_height_in_luma_samples
++        self.web = web
++        self.web.feed(b''.join(b'\x00\x00\x00\x01'+n for n in (vps, sps, pps)))
++        on_ready(self)
++
++    def feed(self, data):
++        self.web.feed(data)
++
++    def close(self):
++        pass
++
+ class TrackedTransport:
+     def __init__(self, transport):
+         self.transport = transport
+@@ -107,9 +125,11 @@
+         return getattr(self.transport, name)
+ 
+ class Mirror:
+-    def __init__(self, runtime, serial=None, connection='auto'):
++    def __init__(self, runtime, serial=None, connection='auto', viewer='native'):
+         self.runtime, self.serial = runtime, serial
+         self.connection = connection
++        self.viewer = viewer
++        self.web = WebMirror(asyncio.get_running_loop()) if viewer == 'web' else None
+         self.stop_event = asyncio.Event()
+         self.player_ready = asyncio.Event()
+         self.player = None
+@@ -127,7 +147,10 @@
+     def ready(self, player):
+         self.player = player
+         self.player_ready.set()
+-        self.runtime.update('starting', player_pid=player.player.pid)
++        if self.viewer == 'web':
++            self.runtime.update('starting', viewer='web')
++        else:
++            self.runtime.update('starting', viewer='native', player_pid=player.player.pid)
+ 
+     async def controls(self, reader, writer):
+         try:
+@@ -197,9 +220,14 @@
+                 sid = answer['connection']['options']['avcMediaStreamOptionClientSessionID']['uuid']
+                 self.session_id = sid if isinstance(sid, uuid.UUID) else uuid.UUID(sid)
+                 receiver = VncStreamServer(rsd, bind='127.0.0.1', audio=False, decoder='av')
+-                receiver._transcoder_cls = lambda *args, **kwargs: DirectPlayer(
+-                    *args, **kwargs, ipc_path=self.runtime.root/'mpv.sock',
+-                    on_stop=self.stop, on_ready=self.ready)
++                if self.viewer == 'web':
++                    receiver._transcoder_cls = lambda *args, **kwargs: WebPlayer(
++                        *args, **kwargs, web=self.web,
++                        on_stop=self.stop, on_ready=self.ready)
++                else:
++                    receiver._transcoder_cls = lambda *args, **kwargs: DirectPlayer(
++                        *args, **kwargs, ipc_path=self.runtime.root/'mpv.sock',
++                        on_stop=self.stop, on_ready=self.ready)
+                 receiver._loop = self.loop
+                 cfg = answer['connection'].get('streamConfig', {})
+                 receiver._local_ssrc = int(cfg.get('RemoteSSRC', 0))
+@@ -210,15 +238,22 @@
+                 tasks = [asyncio.create_task(receiver._udp_recv_and_pipe(transport)),
+                          asyncio.create_task(receiver._rtcp_send_loop(transport))]
+                 await asyncio.wait_for(self.player_ready.wait(), 15)
+-                self.bridge = InputBridge(rsd, str(self.runtime.root/'mpv.sock'))
+-                input_task = asyncio.create_task(self.bridge.run())
+-                await asyncio.wait_for(self.bridge.ready.wait(), 12)
+-                self.runtime.update('running', player_pid=self.player.player.pid)
++                if self.viewer == 'web':
++                    await self.web.set_input(rsd)
++                    self.runtime.update('running', viewer='web')
++                else:
++                    self.bridge = InputBridge(rsd, str(self.runtime.root/'mpv.sock'))
++                    input_task = asyncio.create_task(self.bridge.run())
++                    await asyncio.wait_for(self.bridge.ready.wait(), 12)
++                    self.runtime.update('running', viewer='native', player_pid=self.player.player.pid)
+                 while not self.stop_event.is_set():
+-                    if self.runtime.state.get('error') != self.bridge.error:
++                    if self.web is not None and self.web.video_failed:
++                        self.stop('web-video-failed')
++                        break
++                    if self.bridge is not None and self.runtime.state.get('error') != self.bridge.error:
+                         self.runtime.update('running', error=self.bridge.error,
+                                             player_pid=self.player.player.pid)
+-                    if input_task.done():
++                    if input_task is not None and input_task.done():
+                         # Error type only: never exception messages, locals or keys.
+                         if not input_task.cancelled() and input_task.exception():
+                             log.error('Input service failed (%s)', type(input_task.exception()).__name__)
+@@ -237,6 +272,8 @@
+             finally:
+                 self.cleaning_up = True
+                 self.runtime.update('stopping')
++                if self.web is not None:
++                    await self.web.clear_input()
+                 errors = await close_session(
+                     bridge=self.bridge, input_task=input_task,
+                     service=service, session_id=self.session_id,
+@@ -247,6 +284,8 @@
+                 # The tunnel remains alive until ALL cleanup above has finished.
+ 
+     async def run(self):
++        if self.web is not None:
++            self.web.start()
+         server = await asyncio.start_unix_server(self.controls, path=str(self.runtime.root/'control.sock'), limit=4096)
+         for sig in (signal.SIGTERM, signal.SIGINT):
+             self.loop.add_signal_handler(sig, self.stop)
+@@ -271,13 +310,15 @@
+                 await stopping
+             server.close()
+             await server.wait_closed()
++            if self.web is not None:
++                await asyncio.to_thread(self.web.close)
+             for sig in (signal.SIGTERM, signal.SIGINT):
+                 self.loop.remove_signal_handler(sig)
+             final = 'disconnected' if self.error and self.error.startswith('usb-stream-') else ('error' if self.error else 'stopped')
+             self.runtime.update(final, error=self.error, player_pid=None)
+ 
+-async def async_main(runtime, serial, connection='auto'):
+-    app = Mirror(runtime, serial, connection)
++async def async_main(runtime, serial, connection='auto', viewer='native'):
++    app = Mirror(runtime, serial, connection, viewer)
+     await app.run()
+     return 1 if app.error else 0
+ 
+@@ -285,6 +326,7 @@
+     parser = argparse.ArgumentParser(description='On-demand iPhone mirror')
+     parser.add_argument('--serial', help='Select a paired iPhone')
+     parser.add_argument('--connection',choices=('usb','wifi','auto'),default='auto')
++    parser.add_argument('--viewer',choices=('native','web'),default='native')
+     parser.add_argument('--from-launch-request',action='store_true',help=argparse.SUPPRESS)
+     args = parser.parse_args()
+     if args.from_launch_request:
+@@ -297,6 +339,9 @@
+         if mode not in ('usb','wifi','auto'):
+             parser.error('Invalid saved connection mode')
+         args.connection = mode
++        args.viewer = request.get('viewer', 'native')
++        if args.viewer not in ('native', 'web'):
++            parser.error('Invalid saved viewer mode')
+         args.serial = request.get('serial')
+         if args.serial is not None and not isinstance(args.serial,str):
+             parser.error('Invalid saved device identifier')
+@@ -315,7 +360,7 @@
+         print('The mirror is already running. Use iphone-mirror start to focus it.')
+         return 0
+     try:
+-        return asyncio.run(async_main(runtime, args.serial, args.connection))
++        return asyncio.run(async_main(runtime, args.serial, args.connection, args.viewer))
+     finally:
+         runtime.close()
+ 
+--- cli.py
++++ cli.py
+@@ -165,13 +165,15 @@
+     }
+     if state.get('connection') in ('usb','wifi'):
+         result['connection'] = state['connection']
++    if state.get('viewer') in ('native', 'web'):
++        result['viewer'] = state['viewer']
+     player_pid = state.get("player_pid")
+     if isinstance(player_pid, int) and not isinstance(player_pid, bool):
+         result["player_pid"] = player_pid
+     return result
+ 
+ 
+-def write_launch_request(connection='auto',serial=None):
++def write_launch_request(connection='auto',serial=None,viewer='native'):
+     root=runtime_dir()
+     if root.is_symlink():
+         raise CliError('Runtime directory must not be a symbolic link')
+@@ -182,12 +184,12 @@
+     fd,path=tempfile.mkstemp(prefix='.launch-',dir=root)
+     try:
+         with os.fdopen(fd,'w') as f:
+-            json.dump({'connection':connection,'serial':serial},f)
++            json.dump({'connection':connection,'serial':serial,'viewer':viewer},f)
+         os.replace(path,root/'launch.json')
+     finally:
+         Path(path).unlink(missing_ok=True)
+ 
+-def start(connection=None, serial=None) -> None:
++def start(connection=None, serial=None, viewer='native') -> None:
+     if service_is_active(LEGACY_SERVICE):
+         raise CliError(
+             "iphone-usb-mirror.service is active; close the experiment first to avoid a second stream"
+@@ -197,9 +199,17 @@
+         if ((connection is not None and connection not in ('auto',state.get('connection'),state.get('requested_connection')))
+                 or (serial is not None and serial != state.get('serial'))):
+             raise CliError('The mirror is running in another mode. Stop it before selecting a different mode.')
+-        send_command("focus")
+-        return
+-    write_launch_request(connection or 'auto',serial)
++        if state.get('viewer', 'native') == viewer:
++            if viewer == 'native':
++                send_command("focus")
++            return
++        stop()
++        deadline = time.monotonic() + STOP_TIMEOUT
++        while service_is_active():
++            if time.monotonic() >= deadline:
++                raise CliError('the mirror did not stop within 25 seconds')
++            time.sleep(0.1)
++    write_launch_request(connection or 'auto',serial,viewer)
+     _systemctl("start", SERVICE)
+ 
+ 
+@@ -207,7 +217,7 @@
+     _systemctl("stop", SERVICE)
+ 
+ 
+-def restart(connection=None, serial=None) -> None:
++def restart(connection=None, serial=None, viewer='native') -> None:
+     stop()
+     deadline = time.monotonic() + STOP_TIMEOUT
+     while service_is_active():
+@@ -215,14 +225,14 @@
+             raise CliError("the mirror did not stop within 25 seconds")
+         time.sleep(0.1)
+     if connection is None and serial is None:
+-        start()
++        start(viewer=viewer)
+     else:
+-        start(connection,serial)
++        start(connection,serial,viewer)
+ 
+ 
+ def build_parser() -> argparse.ArgumentParser:
+     parser = argparse.ArgumentParser(prog="iphone-mirror")
+-    parser.add_argument("command", choices=("start", "stop", "restart", "status", "reload-ui"))
++    parser.add_argument("command", choices=("start", "stop", "restart", "status", "reload-ui", "web-start", "web-restart"))
+     parser.add_argument('--connection',choices=('usb','wifi','auto'))
+     parser.add_argument('--serial',help='Select a paired iPhone')
+     return parser
+@@ -231,7 +241,7 @@
+ def main(argv: list[str] | None = None) -> int:
+     parser=build_parser()
+     args = parser.parse_args(argv)
+-    if (args.connection is not None or args.serial is not None) and args.command not in ('start','restart'):
++    if (args.connection is not None or args.serial is not None) and args.command not in ('start','restart','web-start','web-restart'):
+         parser.error('Connection options require start or restart')
+     try:
+         if args.command == "start":
+@@ -239,6 +249,8 @@
+                 start()
+             else:
+                 start(args.connection,args.serial)
++        elif args.command == "web-start":
++            start(args.connection,args.serial,viewer='web')
+         elif args.command == "stop":
+             stop()
+         elif args.command == "restart":
+@@ -246,6 +258,8 @@
+                 restart()
+             else:
+                 restart(args.connection,args.serial)
++        elif args.command == "web-restart":
++            restart(args.connection,args.serial,viewer='web')
+         elif args.command == "reload-ui":
+             if not service_is_active():
+                 raise CliError("the mirror is not running")

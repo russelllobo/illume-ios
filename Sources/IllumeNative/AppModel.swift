@@ -88,8 +88,10 @@ final class IllumeAppModel: NSObject, ObservableObject {
             let next = try await performAppleSignIn()
             apply(session: next)
             await reload()
-        } catch {
+        } catch let error as ASAuthorizationError where error.code == .canceled {
             notice = "Apple sign in was cancelled."
+        } catch {
+            notice = error.localizedDescription
         }
     }
 
